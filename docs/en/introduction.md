@@ -1,24 +1,24 @@
-# Mongol Empire — The Road to a World Empire
+# The Crusades — The Road to Jerusalem
 
-1115: the Jurchen found the Jin. Song, Liao, Jin and Western Xia stand side by side, while small tribes feud on the Mongolian plateau. Soon one man will unite the steppe and shake Eurasia.
+In 1095 Pope Urban II called at Clermont for the recovery of the Holy Land: "God wills it!"
 
-A real-time strategy game set in Eurasia from 1115 to 1294. Choose one of 34 states — Japan, Goryeo, Song, Jin, Western Xia, the Naimans, Keraits, the Kuye of Sakhalin, Khwarazm, Egypt, Byzantium, Kiev, Poland, Hungary and more — and unify Eurasia by 1294.
+A real-time strategy game set in the First, Second and Third Crusades. Choose a crusade, then lead the crusaders or one of the Muslim states and Byzantium that faced them.
 
-![Play screen](../images/play.jpg)
+![Title screen](../images/title.jpg)
+
+![Gameplay](../images/play.jpg)
+
+## The crusades
+
+- **First Crusade (1096–1104)**: a map from Western Europe to the Near East. The crusade owns no cities, cannot be reinforced, wears down on the march and recovers in captured lands or by raiding villages (in Byzantine lands only knights heal). Take Jerusalem by July 1099 and hold it for 5 years to win as the crusaders; the Fatimids win by preventing it or annihilating the crusade.
+- **Second Crusade (1148–1250)**: a map of the Middle East. The crusaders win by taking Damascus without being annihilated; the Fatimids, Zengids, Seljuks and Byzantium compete for the largest realm in 1250.
+- **Third Crusade (1191–1192)**: a map of the Levantine coast, starting at the siege of Acre. Drive the enemy from every coastal city to win; otherwise the war ends with the Treaty of Jaffa.
 
 ## Key points
 
-- **Resources**: food (fields), wood (forests), iron (mines).
-- **National units**: each state fields different troops; horse archers are cavalry that shoot from range.
-- **Subject states**: take a city founded by another state and you can train its units too (marked *).
-- **Ships**: only Japan, Goryeo, Song and the Southern Song can build ships (or states holding their cities). Build a Harbor on the coast, build ships, right-click a ship with troops to board (6 per ship), right-click land with a ship to go ashore.
-- **Razing**: raze your own towns for spoils.
-- **Rise and fall**: the Song start as the world's richest state but lose the north in the Jingkang Incident (1127). The Mongols start weak and rise with Temüjin (1189), the submission of the steppe tribes and Genghis Khan's enthronement (1206).
-- **Heroic Spirits mode**: summon spirits of real generals and rulers such as Genghis Khan, Hōjō Tokimune, Baybars and Yue Fei.
-- **Descent of Tengri**: if Eurasia is not united by 1294, the Eternal Blue Sky descends upon the Mongols.
+- **No new cities**: every city is a real town and must be captured. Workers can build forts.
+- **Ships**: only the Muslim coastal states, the Italian maritime republics and Byzantium can build them.
+- **Heroes**: real people such as Richard the Lionheart, Saladin, Godfrey and Nur ad-Din are on the field from the start for the states they served. Press Heroes (H) to see them.
+- **Villages**: burn them to seize food and heal nearby troops.
 
-See the in-game Help (F1) and the Tutorial (as the Mongols).
-
-## Windows version
-
-The same game also runs as a Windows app (Direct3D11 / Direct2D). Start it with `cargo run --release --bin yymongolia-win`, or run `yymongolia-win.exe` from the `yymongolia-windows` GitHub Actions artifact. Saves are kept in `%APPDATA%\yymongolia\saves` and use the same format as the web version, so exported files move between them.
+See the in-game Help (F1) and the Tutorial (as Byzantium in the Second Crusade). On Windows run `cargo run --release --bin yycrusaders-win`.

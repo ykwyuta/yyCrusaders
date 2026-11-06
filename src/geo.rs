@@ -7,8 +7,6 @@ use crate::geodata::{LAKE_RINGS, LAND_RINGS, NE_RIVERS};
 use crate::rng::{fbm, hash2, Rng};
 use std::cell::Cell;
 
-/// 地図の細かさの倍率（旧来の名残。1で固定）
-pub const MAP_SCALE: usize = 1;
 pub const MAP_W: usize = 600;
 pub const MAP_H: usize = 340;
 
@@ -345,11 +343,6 @@ pub const ENGLAND: usize = 20;
 pub const CASTILE: usize = 21;
 pub const ALMORAVID: usize = 22;
 pub const ZIRID: usize = 23;
-
-/// イスラームの国か
-pub fn muslim(n: usize) -> bool {
-    NATIONS.get(n).map_or(false, |d| d.culture == 4)
-}
 
 // ---------------------------------------------------------------- 都市と遠征
 /// 実在の都市（遠征の始まりの持ち主）

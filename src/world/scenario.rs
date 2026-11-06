@@ -70,10 +70,6 @@ pub struct ScenState {
 }
 
 impl World {
-    pub fn scen_def(&self) -> &'static ScenDef {
-        self.scen.def()
-    }
-
     /// 遠征の始まりの年
     pub fn start_ad(&self) -> f32 {
         self.scen.def().start_ad

@@ -1296,7 +1296,7 @@ impl Game {
         let m = self.world.units.iter().filter(|u| u.on_map() && u.nation as usize == pl && u.merc_until > 0.0).count();
         if self.world.no_reinforce(pl) {
             // 補充できないので上限は出さない
-            return tf!("{}（補充不可）", "{} (no reinforcements)", "{}（无法补充）", n);
+            return n.to_string();
         }
         if m > 0 {
             format!("{}/{}+{}", n, cap, m)

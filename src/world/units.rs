@@ -95,6 +95,7 @@ pub const UT_NAPHTHA: u8 = 22;
 pub const UT_BEDOUIN: u8 = 23;
 pub const UT_KURD: u8 = 24;
 pub const UT_HALQA: u8 = 25;
+#[allow(dead_code)]
 pub const UT_ALMORAVID: u8 = 26;
 
 /// 国ごとに作れる兵（民を除く）。並びは NATIONS と同じ

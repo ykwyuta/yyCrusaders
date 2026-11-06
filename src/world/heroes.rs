@@ -24,12 +24,6 @@ pub struct HeroDef {
     pub desc: &'static str,
 }
 
-impl HeroDef {
-    pub fn kind(&self) -> UnitKind {
-        udef(self.ut).class
-    }
-}
-
 macro_rules! hd {
     ($n:expr, $e:expr, $s:ident, $nat:expr, $lon:expr, $lat:expr, $u:expr, $p:expr, $a:expr, $d:expr) => {
         HeroDef { name: $n, era: $e, scen: Scen::$s, nation: $nat, lon: $lon, lat: $lat, ut: $u, power: $p, art: $a, desc: $d }
@@ -89,17 +83,13 @@ pub const HEROES: &[HeroDef] = &[
 ];
 
 /// 英雄の肖像の数（絵の素材）
+#[cfg_attr(not(test), allow(dead_code))]
 pub const HERO_ART: usize = 46;
 
 impl World {
     /// その国の英雄（ユニット番号）
     pub fn heroes_of(&self, n: usize) -> Vec<usize> {
         (0..self.units.len()).filter(|&i| self.units[i].alive && self.units[i].nation as usize == n && (self.units[i].hero as usize) < HEROES.len()).collect()
-    }
-
-    /// 英雄がいま地上にいるか
-    pub fn hero_on_field(&self, h: usize) -> bool {
-        self.units.iter().any(|u| u.alive && u.hero as usize == h)
     }
 
     /// 遠征の始まりに英雄を置く

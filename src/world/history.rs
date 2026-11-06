@@ -41,6 +41,7 @@ pub fn initial_house(s: Scen, n: usize) -> &'static str {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
 pub enum HKind {
     /// 英雄・名将・名君
     Hero,
@@ -85,6 +86,7 @@ impl HKind {
 
 /// イベントの効果（対象は原則としてイベントの国）
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub enum Fx {
     /// 人物が仕える：生産（税・採集）と兵の攻撃力を一定年数だけ高める（負なら混乱）
     Figure(&'static str, f32, f32, f32),
@@ -485,19 +487,6 @@ impl World {
             }
             n.eco_mul = e.clamp(0.4, 3.0);
             n.mil_mul = m.clamp(0.5, 2.5);
-        }
-    }
-
-    /// 時を進めて、その年までの史実の出来事を起こす（ユニットは動かさない。テスト・撮影用）
-    pub fn hist_skip_to(&mut self, years: f32) {
-        while self.years < years {
-            self.years = (self.years + 1.0).min(years);
-            self.run_history();
-            self.refresh_traits();
-            if self.territory_dirty {
-                self.recompute_territory();
-            }
-            self.update_stats();
         }
     }
 

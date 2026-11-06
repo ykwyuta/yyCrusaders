@@ -1020,10 +1020,6 @@ impl World {
         Map::inb(x, y) && if naval { self.wcost[Map::idx(x, y)].is_finite() } else { self.cost[Map::idx(x, y)].is_finite() }
     }
 
-    pub fn line_clear(&self, a: V2, b: V2) -> bool {
-        self.line_clear_l(a, b, false)
-    }
-
     pub fn line_clear_l(&self, a: V2, b: V2, naval: bool) -> bool {
         let d = b - a;
         let l = d.len();
@@ -2996,30 +2992,6 @@ impl World {
         self.nations[target].hegemon_cd = self.years + 40.0;
         self.coalitions.push(Coalition { kind, target, leader, members, end: self.years + dur });
         true
-    }
-
-    fn found_city_free(&mut self, nation: usize, lon: f32, lat: f32) -> Option<Handle> {
-        let (fx, fy) = ll_to_tile(lon, lat);
-        let (cx, cy) = (fx as i32 - 1, fy as i32 - 1);
-        for r in 0..12i32 {
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if dx.abs() != r && dy.abs() != r {
-                        continue;
-                    }
-                    let (tx, ty) = (cx + dx, cy + dy);
-                    if !self.footprint_free(tx, ty) {
-                        continue;
-                    }
-                    let c = v2(tx as f32 + 1.0, ty as f32 + 1.0);
-                    if self.blds.iter().any(|b| b.alive && b.kind.city() && b.center().dist(c) < 6.0) {
-                        continue;
-                    }
-                    return Some(self.spawn_building(nation, BKind::Capital, tx, ty, true));
-                }
-            }
-        }
-        None
     }
 }
 
