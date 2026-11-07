@@ -20,7 +20,7 @@ cargo build --release --lib --target wasm32-unknown-unknown --config profile.rel
 
 rm -rf dist
 mkdir -p dist
-cp web/index.html web/main.js web/manifest.webmanifest web/icon-192.png web/icon-512.png web/apple-touch-icon.png dist/
+cp web/index.html web/main.js web/browser-recovery.js web/manifest.webmanifest web/icon-192.png web/icon-512.png web/apple-touch-icon.png dist/
 cp assets/app_icon.ico dist/favicon.ico
 cp target/wasm32-unknown-unknown/release/yycrusaders.wasm dist/
 # wasm-opt があればさらに小さくする（任意）
@@ -28,6 +28,14 @@ if command -v wasm-opt >/dev/null 2>&1; then
   wasm-opt -O3 dist/yycrusaders.wasm -o dist/yycrusaders.wasm || true
 fi
 cat > dist/_headers <<'H'
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/main.js
+  Cache-Control: no-cache
+/browser-recovery.js
+  Cache-Control: no-cache
 /yycrusaders.wasm
   Content-Type: application/wasm
   Cache-Control: public, max-age=3600
