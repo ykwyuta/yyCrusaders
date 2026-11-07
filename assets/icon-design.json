@@ -1,0 +1,7 @@
+{
+  "generator": "OpenAI built-in image_gen",
+  "purpose": "Dedicated application icon",
+  "prompt": "Create one premium square videogame application icon, 1024x1024, for a serious historical Crusades strategy game. A bold medieval crusader heraldic shield, aged ivory enamel face with a large clean deep crimson Latin cross, substantial dark steel edge with restrained antique gold detail, a single vertical medieval sword behind the shield with its gold pommel visible above. Heroic, richly crafted, confident silhouette, restrained illuminated-manuscript aesthetic translated into high-end 3D painted game key art. The shield fills approximately 72% of the square, centered and readable as an icon even at 32 pixels. Deep warm charcoal and oxblood background, subtle vignette, sculpted directional lighting, crisp luminous ivory and red contrasting against dark background. Very simple large shapes; sparse details, no castle, no people, no letters, no text, no watermarks, no UI, no app mockup, no rounded-square frame, no border outside the emblem. Opaque full-bleed square image, leave about 10% padding around the emblem.",
+  "source": "assets/app_icon.png",
+  "export_command": "python tools/update_app_icons.py"
+}
