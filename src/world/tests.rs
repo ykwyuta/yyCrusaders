@@ -2,6 +2,50 @@
 
 use super::*;
 
+#[test]
+fn discarding_units_protects_other_nations_and_passengers() {
+    let mut w = World::new(12345, Scen::First);
+    let pos = w.nations[CRUSADERS].home;
+    let worker = w.spawn_unit(CRUSADERS, UT_WORKER, pos, 1.0);
+    let troop = w.spawn_unit(CRUSADERS, UT_INF, pos, 1.0);
+    let ship = w.spawn_unit(CRUSADERS, UT_GALLEY, pos, 1.0);
+    let foreign = w.spawn_unit(BYZANTIUM, UT_INF, pos, 1.0);
+    w.unit_mut(troop).unwrap().aboard = Some(ship);
+    w.unit_mut(ship).unwrap().cargo.push(troop);
+    w.update_stats();
+    let workers = w.nations[CRUSADERS].workers;
+
+    assert!(!w.discard_units(CRUSADERS, &[worker, foreign]));
+    assert!(!w.discard_units(CRUSADERS, &[worker, ship]));
+    assert!(w.unit(worker).is_some() && w.unit(troop).is_some());
+    assert!(w.discard_units(CRUSADERS, &[worker]));
+    assert!(w.unit(worker).is_none());
+    assert_eq!(w.nations[CRUSADERS].workers, workers - 1);
+    assert!(!w.discard_units(CRUSADERS, &[worker]));
+}
+
+#[test]
+fn repair_charges_wood_and_only_restores_completed_owned_buildings() {
+    let mut w = World::new(12345, Scen::First);
+    let fort = w.spawn_building(CRUSADERS, BKind::Fort, 1, 1, true);
+    let unfinished = w.spawn_building(CRUSADERS, BKind::Fort, 3, 1, false);
+    let max = BKind::Fort.max_hp();
+    w.bld_mut(fort).unwrap().hp = max - 101.0;
+    w.nations[CRUSADERS].res = [0.0, 10.0, 0.0];
+    assert_eq!(w.repair_cost(CRUSADERS, fort), Some([0.0, 11.0, 0.0]));
+    assert!(!w.repair_building(CRUSADERS, fort));
+    assert_eq!(w.bld(fort).unwrap().hp, max - 101.0);
+    assert_eq!(w.nations[CRUSADERS].res[1], 10.0);
+
+    w.nations[CRUSADERS].res[1] = 15.0;
+    assert!(!w.repair_building(BYZANTIUM, fort));
+    assert!(!w.repair_building(CRUSADERS, unfinished));
+    assert!(w.repair_building(CRUSADERS, fort));
+    assert!(!w.repair_building(CRUSADERS, fort));
+    assert_eq!(w.bld(fort).unwrap().hp, max);
+    assert_eq!(w.nations[CRUSADERS].res[1], 4.0);
+}
+
 /// 地図を画像（PPM）に書き出す（YY_MAP_OUT=出力の接頭辞。確かめるとき用）
 #[test]
 fn map_preview() {
