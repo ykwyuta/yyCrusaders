@@ -3,6 +3,49 @@
 use super::*;
 
 #[test]
+fn planted_forest_keeps_growing_after_loading() {
+    use crate::save::{Reader, Writer};
+
+    let seed = 12345;
+    let mut w = World::new(seed, Scen::Second);
+    let site = (0..MAP_W * MAP_H)
+        .find(|&i| {
+            let (x, y) = ((i % MAP_W) as i32, (i / MAP_W) as i32);
+            w.owner[i] as usize == CRUSADERS
+                && matches!(w.map.terrain[i], Terrain::Plain | Terrain::Steppe)
+                && w.bmap[i] == 0
+                && !w.map.mines.iter().any(|m| m.x == x && m.y == y && m.amount > 0.0)
+        })
+        .unwrap();
+    let (x, y) = ((site % MAP_W) as i32, (site / MAP_W) as i32);
+    let worker = w.spawn_unit(CRUSADERS, UT_WORKER, v2(x as f32 + 0.5, y as f32 + 0.5), 1.0);
+    let mut old_save = Writer::new();
+    w.save_to(&mut old_save);
+    assert!(World::load_from(seed, &mut Reader::new(&old_save.buf)).unwrap().saplings.is_empty());
+
+    let food = w.nations[CRUSADERS].res[0];
+    assert!(w.plant_forest(CRUSADERS, &[worker], x, y).is_ok());
+    assert!(w.plant_forest(CRUSADERS, &[worker], x, y).is_err());
+    assert_eq!(w.nations[CRUSADERS].res[0], food - PLANT_FOREST_COST[0]);
+    assert!(!w.footprint_free(x, y));
+    assert_ne!(w.map.terrain[site], Terrain::Forest);
+    w.time += FOREST_GROWTH_TIME / 2.0;
+    let mut save = Writer::new();
+    w.save_to(&mut save);
+
+    let mut loaded = World::load_from(seed, &mut Reader::new(&save.buf)).unwrap();
+    loaded.grow_forests();
+    assert_ne!(loaded.map.terrain[site], Terrain::Forest);
+    loaded.time += FOREST_GROWTH_TIME / 2.0;
+    loaded.grow_forests();
+    assert!(loaded.saplings.is_empty());
+    assert_eq!(loaded.map.terrain[site], Terrain::Forest);
+    assert_eq!(loaded.map.wood[site], 120.0);
+    assert_eq!(loaded.cost[site], Terrain::Forest.move_cost());
+    assert_eq!(loaded.terrain_dirty, vec![(x, y)]);
+}
+
+#[test]
 fn discarding_units_protects_other_nations_and_passengers() {
     let mut w = World::new(12345, Scen::First);
     let pos = w.nations[CRUSADERS].home;
