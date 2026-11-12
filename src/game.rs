@@ -148,6 +148,8 @@ enum Act {
     /// 表示言語を切り替える
     Lang,
     SaveMenu,
+    /// 発行済みの命令を維持したまま、部隊の選択を解く
+    DeselectUnits,
     /// 選択・建設の取り消し（タッチ操作用の ✕）
     Cancel,
     /// 出来事の告知（バナー）を閉じる
@@ -2039,6 +2041,12 @@ impl Game {
             Act::DismissAllBanners => self.world.dismiss_all_banners(),
             Act::ToggleAlerts => self.alerts_open = !self.alerts_open,
             Act::ClearMsgs => self.msg_cut = self.world.time,
+            Act::DeselectUnits => {
+                self.mode = Mode::Normal;
+                self.place_tap = None;
+                self.ldown = None;
+                self.clear_sel();
+            }
             Act::Cancel => {
                 if self.mode != Mode::Normal {
                     self.mode = Mode::Normal;
@@ -3714,8 +3722,13 @@ impl Game {
             self.add_button(ix + iw - 136.0, h - 50.0, ix + iw - 14.0, h - 14.0, t!("英雄 H", "Heroes H", "英雄 H"), "", 'H' as u32, true, Act::Summon, t!("この遠征に登場する実在の人物と、いまの居場所", "The real people of this crusade and where they are now", "本次远征登场的真实人物及其所在"));
         }
 
-        // スマートフォン：選択や建設場所選びを指で解く ✕
-        if self.gfx.compact && (self.mode != Mode::Normal || !self.sel.is_empty() || self.sel_b.is_some()) {
+        let military_group = self.sel.len() > 1
+            && self.sel.iter().any(|&h| self.world.unit(h).is_some_and(|u| u.kind.military()));
+        if military_group {
+            let tip = t!("命令を維持したまま選択を解除", "Deselect and keep current orders", "取消选择并保留当前命令");
+            self.add_button(ix + iw - 46.0, py + 6.0, ix + iw - 8.0, py + 39.0, "✖", "", 0, true, Act::DeselectUnits, tip);
+        } else if self.gfx.compact && (self.mode != Mode::Normal || !self.sel.is_empty() || self.sel_b.is_some()) {
+            // スマートフォン：選択や建設場所選びを指で解く ✕
             let tip = if self.mode != Mode::Normal { t!("取り消す", "Cancel", "取消") } else { t!("選択を解く", "Deselect", "取消选择") };
             self.add_button(ix + iw - 46.0, py + 10.0, ix + iw - 8.0, py + 48.0, "✕", "", 0, true, Act::Cancel, tip);
         }
