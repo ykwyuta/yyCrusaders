@@ -1,6 +1,7 @@
 //! 画面・入力・HUD（独自実装の UI）
 
 mod chronicle;
+mod corps;
 mod heroes;
 mod market;
 mod mobile;
@@ -108,6 +109,10 @@ enum Act {
     AllWorkersMine,
     AllWorkersUpgrade,
     ArmyDefend,
+    ToggleCorps,
+    FormCorps,
+    SelectCorps(usize),
+    DisbandCorps,
     AllArmyAttack,
     AllArmyDefend,
     AllArmyUpgrade,
@@ -213,6 +218,9 @@ pub struct Game {
     sel: Vec<Handle>,
     sel_b: Vec<Handle>,
     groups: Vec<Vec<Handle>>,
+    corps: [Vec<Handle>; corps::CORPS_SLOTS],
+    active_corps: Option<usize>,
+    show_corps: bool,
     speed: u32,
     paused: bool,
     /// 部隊を選んでから命令するまでの一時停止
@@ -368,6 +376,9 @@ impl Game {
             sel: Vec::new(),
             sel_b: Vec::new(),
             groups: vec![Vec::new(); 10],
+            corps: Default::default(),
+            active_corps: None,
+            show_corps: false,
             speed: 1,
             paused: false,
             acc: 0.0,
@@ -811,6 +822,7 @@ impl Game {
             let pl = self.world.player;
             let sel: Vec<Handle> = self.sel.iter().copied().filter(|&h| self.world.unit(h).map_or(false, |u| u.nation as usize == pl || self.seen(u.pos))).collect();
             self.sel = sel;
+            self.prune_corps();
             let barracks_group = self.sel_b.len() > 1;
             self.sel_b.retain(|&h| {
                 self.world.bld(h).is_some_and(|b| !barracks_group || b.nation as usize == pl)
@@ -1092,8 +1104,12 @@ impl Game {
                             Mode::PlantForest(_) => self.ldown = Some((x, y)),
                             Mode::AttackMove => {
                                 let p = self.screen_to_world(x, y);
-                                let hs = self.own_sel();
-                                self.world.order_move(&hs, p, true);
+                                if self.active_corps.is_some() {
+                                    self.order_corps_advance(p);
+                                } else {
+                                    let hs = self.own_sel();
+                                    self.world.order_move(&hs, p, true);
+                                }
                                 self.marker = Some((p, 0.6, true));
                                 self.mode = Mode::Normal;
                                 if let Some(t) = &mut self.tut {
@@ -1233,6 +1249,8 @@ impl Game {
             VK_ESCAPE => {
                 if self.mode != Mode::Normal {
                     self.mode = Mode::Normal;
+                } else if self.show_corps {
+                    self.show_corps = false;
                 } else if self.world.banner.is_some() && !self.overlay_open() {
                     // 出来事の告知を閉じる
                     self.world.dismiss_banner();
@@ -1283,6 +1301,8 @@ impl Game {
 
     fn clear_sel(&mut self) {
         self.discard_pending = false;
+        self.active_corps = None;
+        self.show_corps = false;
         for h in self.sel.drain(..) {
             if let Some(u) = self.world.unit_mut(h) {
                 u.selected = false;
@@ -1517,7 +1537,7 @@ impl Game {
     }
 
     /// 軍事ユニットに領内防衛・侵入者迎撃・城邑集結を命じる
-    fn order_army_defend(&mut self, hs: &[Handle]) {
+    fn order_army_defend(&mut self, hs: &[Handle], as_corps: bool) {
         if hs.is_empty() {
             self.notice(t!("軍事ユニットがいない", "No soldiers", "没有军事单位"));
             return;
@@ -1537,7 +1557,11 @@ impl Game {
             }
         }
         if let Some(p) = intruder {
-            self.world.order_move(hs, p, true);
+            if as_corps {
+                self.move_corps(hs, p);
+            } else {
+                self.world.order_move(hs, p, true);
+            }
             self.marker = Some((p, 0.6, true));
             self.notice(&tf!("{}部隊に領内侵入者の迎撃を命じた", "Ordered {} units to intercept intruders", "命令{}个单位迎击入侵者", hs.len()));
             if let Some(t) = &mut self.tut {
@@ -1552,7 +1576,24 @@ impl Game {
             .filter(|b| b.alive && b.nation as usize == pl && b.kind.city() && b.done())
             .map(|b| b.center())
             .collect();
-        let rally = if cities.is_empty() {
+        let rally = if as_corps {
+            let mut center = v2(0.0, 0.0);
+            for &h in hs {
+                center = center + self.world.unit(h).unwrap().pos;
+            }
+            center = center * (1.0 / hs.len() as f32);
+            let city = cities.iter().copied().min_by(|a, b| a.dist(center).total_cmp(&b.dist(center)));
+            let goal = city.map_or(home, |c| {
+                [v2(2.2, 0.0), v2(-2.2, 0.0), v2(0.0, 2.2), v2(0.0, -2.2)]
+                    .into_iter()
+                    .map(|off| c + off)
+                    .filter(|&p| self.world.passable_at(p))
+                    .min_by(|a, b| a.dist(center).total_cmp(&b.dist(center)))
+                    .unwrap_or(c)
+            });
+            self.move_corps(hs, goal);
+            goal
+        } else if cities.is_empty() {
             home
         } else {
             // 各部隊から最も近い自国城邑へ帰還・防衛配置
@@ -1952,6 +1993,7 @@ impl Game {
         }
         self.scen_opt = s;
         self.world = World::new(self.seed, s);
+        self.reset_corps();
         self.title_sel = None;
         self.rebuild_terrain();
         if self.screen == Screen::Title {
@@ -2112,6 +2154,7 @@ impl Game {
                 self.screen = Screen::Title;
                 self.title_sel = None;
                 self.clear_sel();
+                self.reset_corps();
                 self.show_diplo = false;
                 self.show_help = false;
                 self.show_chron = false;
@@ -2220,7 +2263,11 @@ impl Game {
             }
             Act::AttackMove => {
                 if !self.own_sel().is_empty() {
+                    self.show_corps = false;
                     self.mode = Mode::AttackMove;
+                    if self.active_corps.is_some() {
+                        self.notice(t!("軍団の進軍先を地図上で指定してください", "Choose where the corps should advance", "请在地图上选择军团进军的目标"));
+                    }
                 }
             }
             Act::SelectAllWorkers => {
@@ -2291,15 +2338,26 @@ impl Game {
                 }
             }
             Act::ArmyDefend => {
-                let hs: Vec<Handle> = self.own_sel().into_iter().filter(|&h| self.world.unit(h).map_or(false, |u| u.kind.military())).collect();
-                self.order_army_defend(&hs);
+                let hs = self.selected_soldiers();
+                self.mode = Mode::Normal;
+                self.show_corps = false;
+                self.order_army_defend(&hs, self.active_corps.is_some());
             }
+            Act::ToggleCorps if self.corps_controls_available() => {
+                self.mode = Mode::Normal;
+                self.ldown = None;
+                self.show_corps = !self.show_corps;
+            }
+            Act::FormCorps if self.corps_controls_available() && self.show_corps => self.form_corps(),
+            Act::SelectCorps(slot) if self.corps_controls_available() && self.show_corps => self.select_corps(slot),
+            Act::DisbandCorps if self.corps_controls_available() && self.show_corps => self.disband_corps(),
+            Act::ToggleCorps | Act::FormCorps | Act::SelectCorps(_) | Act::DisbandCorps => {}
             Act::AllArmyAttack => {
                 self.order_all_army_attack();
             }
             Act::AllArmyDefend => {
                 let hs = self.all_military();
-                self.order_army_defend(&hs);
+                self.order_army_defend(&hs, false);
             }
             Act::AllArmyUpgrade => {
                 let hs = self.all_military();
@@ -3752,21 +3810,43 @@ impl Game {
         let iw = w - ix - 394.0;
         self.art.draw_inset_box(&self.gfx, ix, py + 6.0, ix + iw, h - 4.0);
         self.art.draw_corner_ornaments(&self.gfx, ix + 2.0, py + 8.0, ix + iw - 2.0, h - 6.0, 11.0);
-        self.render_info(ix + 12.0, py + 12.0, iw - 24.0);
+        let corps_available = self.corps_controls_available();
+        if !corps_available {
+            self.show_corps = false;
+        }
+        if self.show_corps {
+            self.render_corps(ix + 12.0, py + 12.0, iw - 24.0);
+        } else {
+            self.render_info(ix + 12.0, py + 12.0, iw - 24.0);
+        }
         // 英雄の一覧
-        if !self.gfx.compact {
+        if !self.show_corps && !self.gfx.compact {
             self.add_button(ix + iw - 136.0, h - 50.0, ix + iw - 14.0, h - 14.0, t!("英雄 H", "Heroes H", "英雄 H"), "", 'H' as u32, true, Act::Summon, t!("この遠征に登場する実在の人物と、いまの居場所", "The real people of this crusade and where they are now", "本次远征登场的真实人物及其所在"));
         }
 
         let military_group = self.sel.len() > 1
             && self.sel.iter().any(|&h| self.world.unit(h).is_some_and(|u| u.kind.military()));
-        if military_group {
+        if military_group && !self.show_corps {
             let tip = t!("命令を維持したまま選択を解除", "Deselect and keep current orders", "取消选择并保留当前命令");
             self.add_button(ix + iw - 46.0, py + 6.0, ix + iw - 8.0, py + 39.0, "✖", "", 0, true, Act::DeselectUnits, tip);
-        } else if self.gfx.compact && (self.mode != Mode::Normal || !self.sel.is_empty() || !self.sel_b.is_empty()) {
+        } else if !self.show_corps && self.gfx.compact && (self.mode != Mode::Normal || !self.sel.is_empty() || !self.sel_b.is_empty()) {
             // スマートフォン：選択や建設場所選びを指で解く ✕
             let tip = if self.mode != Mode::Normal { t!("取り消す", "Cancel", "取消") } else { t!("選択を解く", "Deselect", "取消选择") };
             self.add_button(ix + iw - 46.0, py + 10.0, ix + iw - 8.0, py + 48.0, "✕", "", 0, true, Act::Cancel, tip);
+        }
+
+        if corps_available {
+            let label = if self.show_corps {
+                t!("閉じる", "Close", "关闭").to_string()
+            } else if let Some(slot) = self.active_corps {
+                tf!("第{}軍団", "Corps {}", "第{}军团", slot + 1)
+            } else {
+                t!("軍団", "Corps", "军团").to_string()
+            };
+            let button_x = if self.show_corps { ix + iw - 104.0 } else { ix + 12.0 };
+            let button_y = if self.show_corps { py + 8.0 } else { h - 46.0 };
+            self.add_button(button_x, button_y, button_x + 92.0, button_y + 34.0, &label, "", 'J' as u32, true, Act::ToggleCorps,
+                t!("軍団の編成・呼び出し・解散（J）", "Form, recall, or disband corps (J)", "组建、召回或解散军团（J）"));
         }
 
         // 右側のコマンド欄ボックス
@@ -4516,9 +4596,9 @@ impl Game {
             "", 0, true, Act::RefreshCache, "");
         self.art.draw_inset_box(&self.gfx, x0 + 14.0, y0 + 46.0, x0 + pw - 14.0, y0 + ph - 14.0);
         let text = t!(
-            "■ 遠征を選ぶ　タイトル画面の「遠征」ボタンで第1回・第2回・第3回を切り替え、地図の印から率いる国を選ぶ。遠征ごとに地図・国・都市・英雄・勝利条件が違う。\n\n■ 第1回十字軍（1096〜1104年、1年＝4分）　西欧から近東までの地図。十字軍かファーティマ朝を選ぶ。\n  ・十字軍：史実の占領（1099年7月）までにエルサレムを奪い、5年守り抜けば勝利。奪えなかったり、5年のうちに失ったり、全滅すれば敗北。\n  ・ファーティマ朝：それを阻むか、十字軍を全滅させれば勝利。\n  ・十字軍は都市を持たずに西欧の各地から発つ。出発の時が最大の兵力で、兵も民も補充できない（維持費も無い）。敵地を進むと体力が少しずつ減り、止まっていても減る。奪った都市の領内では癒える。ビザンツ領では騎士は癒えるが、民衆十字軍は癒えない。\n  ・ルーム・大セルジューク・ダニシュメンド・ダマスカス・アレッポ・アルトゥクのセルジューク系の国は、自領を通るファーティマ朝の兵も宣戦なしに迎え撃つ（その地では戦い返せる）。\n■ 第2回十字軍（1148〜1250年、1年＝24秒）　中近東の地図。十字軍・ファーティマ朝・ザンギー朝・セルジューク朝（ルーム）・ビザンツ帝国から選ぶ。\n  ・十字軍：全滅せずにダマスカスを占領すれば勝利。\n  ・ほかの国：1250年に最も広い版図（領土のマス数）を持つ国が勝利。ファーティマ朝は1171年にアイユーブ朝となる。\n■ 第3回十字軍（1191年6月〜1192年9月、1年＝20分）　レバント沿岸の地図。十字軍連合軍かアイユーブ朝を選ぶ。アッコンの包囲から始まる。\n  ・レバント沿岸の都市（⚓の印）から相手を駆逐すれば勝利。1192年9月までに決まらなければヤッファの和約で終わる。\n\n■ 街と砦　街（都市）は新しく築けない。地図の都市はすべて実在の街で、攻め落として手に入れる（実在の都市は焼き払えない）。民で砦（要塞）は築ける（R）。近づく敵兵を射る（射程9）。数は城邑の数で決まる上限まで。主な都市には始まりから城壁の要塞と兵営がある。\n■ 民家　都市のまわりの村。持ち主にわずかな税を納める。敵の民家を焼くと食糧を奪い、近くの自軍の体力が3割戻る。しばらくすると建て直される。\n■ 英雄　遠征のときに実在した諸侯・王・スルタン・将軍が、仕えていた国の兵として初めから地上にいる（リチャード獅子心王、サラディン、ゴドフロワ、ヌールッディーンなど）。英雄は傷が癒えるが、討たれれば戻らない。「英雄 H」で一覧と居場所を見る。史実の出来事で帰国・暗殺されることもある。\n■ 船と海　船を造れるのはイスラームの沿岸国家（ファーティマ朝・アイユーブ朝）、イタリアの海の共和国（ヴェネツィア・ジェノヴァ・ピサ）、ビザンツ帝国だけ。占領しても造れるようにはならない。始まりから船を持つ十字軍もある（借りた船）。海の向こうへ移動・攻撃を命じれば、兵は岸で待ち、手の空いた船が自動で往復して運ぶ（1隻に6人）。\n\n■ 資源　糧（田）・木（森の伐採）・鉄（鉱山）。民が国都や邑に運ぶ。城邑と民家からも少し税が入る。\n■ ユニット　数には上限がある（城邑が増えると上がる）。代わりに訓練・教化で1体ずつ能力を高める。兵は存在するだけで糧を食べる（維持費）。\n  相性：歩兵（槍）＞騎兵＞弓兵＞歩兵。騎射兵（トルコ騎射兵・マムルーク・トルコポーレ）は遠くから射る騎兵。騎士とテンプル騎士・ホスピタル騎士は強力な突撃兵。\n■ 服属　他国が築いた都市を攻め落とすと、その国の兵（船を除く）も兵営で作れる（名前に＊）。\n■ 外交　F2で外交画面。攻撃するには宣戦が必要。都市を落とすと自国のものになる。全ての都市を失うと滅亡する（第1回の十字軍は兵が尽きるまで滅びない）。\n■ 反〇〇同盟　第2回の長い時代だけ。侵略を重ねて隣国の警戒が100になった国に、国境を接する国々が15年間いっせいに攻めかかる。\n■ 史実の出来事　その時が来ると、英雄の登場、王朝の交代（ファーティマ朝の終焉など）、都市の奪取（アスカロンの陥落・エルサレムの開城など）が起こる。プレイヤーの都市は出来事で奪われず、相手が攻めてくる。歴史（F3）で確かめられる。\n■ 交易（F4）　国に属さない商人が諸国を巡り、生産の盛んな国に集まって税（銭）を払う。地中海の道・紅海の道・シルクロードの先には遠方の商人が来る。ベドウィン・トルクメン・ニザール派などの部族は略奪に来るか、傭兵として雇える。\n■ 指揮中の一時停止　自分の部隊を選ぶと時が止まり、命令を出すか選択を解くと進む。\n■ 戦場の霧　自国の民・兵・建物の近くしか見えない。一度見た土地はうっすら見える。\n\n■ 操作\n  左クリック：選択　ドラッグ：範囲選択　ダブルクリック：同じ兵種を全選択（完成済みの兵営も画面内で一括選択・生産）　Shift：追加選択\n  右クリック：移動／攻撃／採集（森・鉱山・田）／建設の手伝い／乗船（兵で船）／上陸（船で陸）　建物を選んで右クリック：集結地点\n  A：進軍（途中の敵と戦う）　S：停止　T：訓練・教化　C：兵⇔民の転換（船：上陸）　Q/W/R…：建設・訓練　H：英雄の一覧\n  Ctrl＋数字：部隊の登録　数字：呼び出し　.：手の空いた民　Home：国都へ\n  ホイール：拡大縮小　中ボタンドラッグ・矢印キー・画面端：移動　ミニマップのクリック：その場所へ\n  Space：一時停止　＋／−：速度　Esc：告知を閉じる・取り消し　F5：記録　F11：全画面　Ctrl＋＋／Ctrl＋−：文字の大きさ",
-            "■ Choosing a crusade  On the title screen, the Crusade button switches between the First, Second and Third Crusades; click a mark on the map to choose your side. Each crusade has its own map, states, cities, heroes and victory conditions.\n\n■ First Crusade (1096–1104, 1 year = 4 min)  A map from Western Europe to the Near East. Play the Crusaders or the Fatimids.\n  · Crusaders: take Jerusalem by the historical date (July 1099) and hold it for 5 years to win. Fail to take it, lose it within 5 years, or be annihilated, and you lose.\n  · Fatimids: prevent that, or annihilate the crusade.\n  · The crusade owns no cities and sets out from across the West. It is strongest at departure: no troops or workers can be added (and it pays no upkeep). Marching through enemy land slowly drains HP, and so does standing still; troops heal inside the territory of captured cities. In Byzantine lands knights heal, but the People's Crusade does not.\n  · The Seljuk states (Rum, the Great Seljuks, the Danishmendids, Damascus, Aleppo, the Artuqids) attack Fatimid troops crossing their land even without war (and those troops may fight back there).\n■ Second Crusade (1148–1250, 1 year = 24 s)  A map of the Middle East. Play the Crusaders, Fatimids, Zengids, Seljuks (of Rum) or Byzantium.\n  · Crusaders: capture Damascus without being annihilated.\n  · Others: the state with the largest realm (territory tiles) in 1250 wins. The Fatimids become the Ayyubids in 1171.\n■ Third Crusade (June 1191 – September 1192, 1 year = 20 min)  A map of the Levantine coast. Play the Crusader host or the Ayyubids, starting at the siege of Acre.\n  · Drive the enemy from every Levantine coastal city (⚓ marks) to win. If nothing is decided by September 1192, the war ends with the Treaty of Jaffa.\n\n■ Cities and forts  Cities cannot be founded. Every city on the map is a real town; capture them (historical cities cannot be razed). Workers can build forts (R), which shoot approaching enemies (range 9), up to a limit set by your number of cities. Major cities start with wall forts and barracks.\n■ Villages  Hamlets around cities that pay their owner a little tax. Burn an enemy village to seize its food: your troops nearby recover 30% HP. Villages are rebuilt after a while.\n■ Heroes  Real princes, kings, sultans and generals of each crusade are on the field from the start, serving the state they served in history (Richard the Lionheart, Saladin, Godfrey, Nur ad-Din...). Heroes heal over time but never return once slain. Press Heroes (H) to see them and where they are. Historical events may send them home or have them assassinated.\n■ Ships and the sea  Only the Muslim coastal states (Fatimids, Ayyubids), the Italian maritime republics (Venice, Genoa, Pisa) and Byzantium can build ships; capturing their cities does not change that. Some crusaders start with ships (hired ones). Order troops across the sea and they wait on the shore while free ships ferry them back and forth (6 per ship).\n\n■ Resources  Food (fields), wood (forests), iron (mines). Workers carry them to a capital or town. Cities and villages also pay a little tax.\n■ Units  Their number is limited (more cities raise the limit). Instead, Train / Educate raises each unit's power. Soldiers eat food just by existing (upkeep).\n  Counters: infantry (spears) > cavalry > archers > infantry. Horse archers (Turkish horse archers, Mamluks, Turcopoles) are cavalry that shoot from range. Knights, Templars and Hospitallers are powerful shock troops.\n■ Subjects  Capture a city founded by another state and you can train its units (except ships) at your barracks (marked with *).\n■ Diplomacy  F2 opens Diplomacy. You must declare war before attacking. Capture a city and it becomes yours. A state that loses all its cities falls (the First Crusade's crusaders fall only when their troops are gone).\n■ Anti-X League  Only in the long age of the Second Crusade. When a state's aggression pushes its neighbours' alarm to 100, the states on its borders attack it together for 15 years.\n■ Historical events  At the right time heroes appear, dynasties change (the end of the Fatimids) and cities change hands (the fall of Ascalon, the surrender of Jerusalem...). Events never take the player's cities; the other side attacks instead. See History (F3).\n■ Trade (F4)  Merchants of no state travel the land and gather in productive states, paying tax (coin). Foreign merchants arrive at the ends of the Mediterranean, Red Sea and Silk Roads. Bedouin, Turkmens, Nizaris and other peoples raid, or can be hired as mercenaries.\n■ Time stops while commanding  Selecting your own units stops time; it resumes when you give an order or clear the selection.\n■ Fog of war  You see only around your own workers, soldiers and buildings. Land you have seen stays dimly visible.\n\n■ Controls\n  Left click: select   Drag: box select   Double click: select all of a type (completed barracks on screen can train together)   Shift: add to selection\n  Right click: move / attack / gather (forest, mine, field) / help build / board (troops on a ship) / land (ship on land)   Right click with a building selected: rally point\n  A: attack-move   S: stop   T: train / educate   C: convert soldier ⇔ worker (ships: land troops)   Q/W/R...: build / train   H: heroes\n  Ctrl+number: save group   Number: recall group   .: idle worker   Home: go to capital\n  Wheel: zoom   Middle drag / arrow keys / screen edge: scroll   Minimap click: jump\n  Space: pause   + / -: speed   Esc: close notice / cancel   F5: save / load   F11: fullscreen   Ctrl++ / Ctrl+−: text size",
-            "■ 选择远征　在标题画面用“远征”按钮切换第一次、第二次、第三次十字军，再点击地图上的标记选择要率领的一方。每次远征的地图、国家、城市、英雄与胜利条件各不相同。\n\n■ 第一次十字军（1096〜1104年，1年＝4分钟）　从西欧到近东的地图。可选十字军或法蒂玛王朝。\n  ・十字军：在史实攻占日（1099年7月）前夺取耶路撒冷并坚守5年即胜利。未能夺取、5年内失守或全军覆没则失败。\n  ・法蒂玛王朝：阻止这一切，或全歼十字军即胜利。\n  ・十字军没有城市，从西欧各地出发。出发时兵力最强，兵与民都无法补充（也没有维持费）。在敌境行军体力会逐渐下降，停留时也会下降；在攻占城市的领地内可恢复。在拜占庭领内骑士可以恢复，平民十字军则不能。\n  ・罗姆、大塞尔柱、达尼什曼德、大马士革、阿勒颇、阿尔图格等塞尔柱系国家，即使未宣战也会迎击穿越其领土的法蒂玛军（在该地可以还击）。\n■ 第二次十字军（1148〜1250年，1年＝24秒）　中近东的地图。可选十字军、法蒂玛王朝、赞吉王朝、塞尔柱王朝（罗姆）、拜占庭帝国。\n  ・十字军：在不被全歼的情况下攻占大马士革即胜利。\n  ・其他国家：1250年时版图（领土格数）最广者胜利。法蒂玛王朝于1171年变为阿尤布王朝。\n■ 第三次十字军（1191年6月〜1192年9月，1年＝20分钟）　黎凡特沿岸的地图。可选十字军联军或阿尤布王朝，从阿卡之围开始。\n  ・将敌人逐出所有黎凡特沿岸城市（⚓标记）即胜利。若到1192年9月仍未决出胜负，则以雅法和约告终。\n\n■ 城市与要塞　无法新建城市。地图上的城市都是真实存在的城镇，须攻占获得（真实城市无法焚毁）。民可以修筑要塞（R），射击靠近的敌兵（射程9），数量上限取决于城邑数。主要城市开局即有城墙要塞与兵营。\n■ 民宅　城市周围的村庄，向领主缴纳少量赋税。焚烧敌方民宅可夺取粮食，附近己方士兵恢复3成体力。过一段时间会重建。\n■ 英雄　每次远征时真实存在的诸侯、国王、苏丹与将领，从一开始就作为其效力之国的士兵登场（狮心王理查、萨拉丁、戈弗雷、努尔丁等）。英雄会恢复伤势，但战死后不再归来。按“英雄 H”查看名单与所在。史实事件可能使其归国或遭暗杀。\n■ 船与海　只有伊斯兰沿海国家（法蒂玛王朝、阿尤布王朝）、意大利海上共和国（威尼斯、热那亚、比萨）与拜占庭帝国能造船，攻占其城市也无法获得造船能力。部分十字军开局即拥有（租借的）船只。命令士兵渡海后，他们会在岸边等待，空闲的船只会自动往返运送（每船6人）。\n\n■ 资源　粮（田）、木（伐林）、铁（矿山）。民运往国都或邑。城邑与民宅也会缴纳少量赋税。\n■ 单位　数量有上限（城邑越多上限越高）。可通过训练、教化逐个提高能力。士兵只要存在就会消耗粮食（维持费）。\n  相克：步兵（枪）＞骑兵＞弓兵＞步兵。骑射兵（突厥骑射兵、马穆鲁克、土科波雷）是能远程射击的骑兵。骑士、圣殿骑士与医院骑士是强力的冲锋部队。\n■ 臣属　攻占他国所筑的城市后，可在兵营训练该国的兵种（船只除外，名称带＊）。\n■ 外交　按 F2 打开外交画面。进攻前必须宣战。攻下城市即归己方所有。失去全部城市即灭亡（第一次十字军的十字军在士兵耗尽前不会灭亡）。\n■ 反某某同盟　仅限第二次十字军的漫长时代。屡次侵略使邻国警戒达到100的国家，将遭到接壤各国在15年间的联合进攻。\n■ 史实事件　时机一到，就会有英雄登场、王朝更替（法蒂玛王朝的终结）与城市易手（阿斯卡隆陷落、耶路撒冷开城等）。事件不会夺取玩家的城市，而是由对方发兵进攻。可在历史（F3）中查看。\n■ 贸易（F4）　不属于任何国家的商人周游各国，聚集于生产兴盛之国并缴税（钱）。远方商人会经地中海之路、红海之路、丝绸之路而来。贝都因人、突厥蛮人、尼扎里派等部族会来劫掠，也可雇为佣兵。\n■ 指挥时暂停　选中己方部队时时间停止，下达命令或取消选择后继续。\n■ 战争迷雾　只能看到己方民、兵、建筑附近。曾看过的土地会淡淡显示。\n\n■ 操作\n  左键：选择　拖动：框选　双击：选中同类全部（可选中屏幕内已完工的兵营并批量生产）　Shift：追加选择\n  右键：移动／攻击／采集（森林、矿山、田）／协助建造／登船（兵对船）／登陆（船对陆地）　选中建筑后右键：集结点\n  A：进军（沿途作战）　S：停止　T：训练・教化　C：兵⇔民转换（船：登陆）　Q/W/R…：建造・训练　H：英雄名单\n  Ctrl＋数字：编队　数字：调出编队　.：空闲的民　Home：前往国都\n  滚轮：缩放　中键拖动・方向键・屏幕边缘：移动　点击小地图：前往该处\n  Space：暂停　＋／−：速度　Esc：关闭通知・取消　F5：存档　F11：全屏　Ctrl＋＋／Ctrl＋−：文字大小",
+            "■ 遠征を選ぶ　タイトル画面の「遠征」ボタンで第1回・第2回・第3回を切り替え、地図の印から率いる国を選ぶ。遠征ごとに地図・国・都市・英雄・勝利条件が違う。\n\n■ 第1回十字軍（1096〜1104年、1年＝4分）　西欧から近東までの地図。十字軍かファーティマ朝を選ぶ。\n  ・十字軍：史実の占領（1099年7月）までにエルサレムを奪い、5年守り抜けば勝利。奪えなかったり、5年のうちに失ったり、全滅すれば敗北。\n  ・ファーティマ朝：それを阻むか、十字軍を全滅させれば勝利。\n  ・十字軍は都市を持たずに西欧の各地から発つ。出発の時が最大の兵力で、兵も民も補充できない（維持費も無い）。敵地を進むと体力が少しずつ減り、止まっていても減る。奪った都市の領内では癒える。ビザンツ領では騎士は癒えるが、民衆十字軍は癒えない。\n  ・ルーム・大セルジューク・ダニシュメンド・ダマスカス・アレッポ・アルトゥクのセルジューク系の国は、自領を通るファーティマ朝の兵も宣戦なしに迎え撃つ（その地では戦い返せる）。\n■ 第2回十字軍（1148〜1250年、1年＝24秒）　中近東の地図。十字軍・ファーティマ朝・ザンギー朝・セルジューク朝（ルーム）・ビザンツ帝国から選ぶ。\n  ・十字軍：全滅せずにダマスカスを占領すれば勝利。\n  ・ほかの国：1250年に最も広い版図（領土のマス数）を持つ国が勝利。ファーティマ朝は1171年にアイユーブ朝となる。\n■ 第3回十字軍（1191年6月〜1192年9月、1年＝20分）　レバント沿岸の地図。十字軍連合軍かアイユーブ朝を選ぶ。アッコンの包囲から始まる。\n  ・レバント沿岸の都市（⚓の印）から相手を駆逐すれば勝利。1192年9月までに決まらなければヤッファの和約で終わる。\n\n■ 街と砦　街（都市）は新しく築けない。地図の都市はすべて実在の街で、攻め落として手に入れる（実在の都市は焼き払えない）。民で砦（要塞）は築ける（R）。近づく敵兵を射る（射程9）。数は城邑の数で決まる上限まで。主な都市には始まりから城壁の要塞と兵営がある。\n■ 民家　都市のまわりの村。持ち主にわずかな税を納める。敵の民家を焼くと食糧を奪い、近くの自軍の体力が3割戻る。しばらくすると建て直される。\n■ 英雄　遠征のときに実在した諸侯・王・スルタン・将軍が、仕えていた国の兵として初めから地上にいる（リチャード獅子心王、サラディン、ゴドフロワ、ヌールッディーンなど）。英雄は傷が癒えるが、討たれれば戻らない。「英雄 H」で一覧と居場所を見る。史実の出来事で帰国・暗殺されることもある。\n■ 船と海　船を造れるのはイスラームの沿岸国家（ファーティマ朝・アイユーブ朝）、イタリアの海の共和国（ヴェネツィア・ジェノヴァ・ピサ）、ビザンツ帝国だけ。占領しても造れるようにはならない。始まりから船を持つ十字軍もある（借りた船）。海の向こうへ移動・攻撃を命じれば、兵は岸で待ち、手の空いた船が自動で往復して運ぶ（1隻に6人）。\n\n■ 資源　糧（田）・木（森の伐採）・鉄（鉱山）。民が国都や邑に運ぶ。城邑と民家からも少し税が入る。\n■ ユニット　数には上限がある（城邑が増えると上がる）。代わりに訓練・教化で1体ずつ能力を高める。兵は存在するだけで糧を食べる（維持費）。\n  相性：歩兵（槍）＞騎兵＞弓兵＞歩兵。騎射兵（トルコ騎射兵・マムルーク・トルコポーレ）は遠くから射る騎兵。騎士とテンプル騎士・ホスピタル騎士は強力な突撃兵。\n■ 服属　他国が築いた都市を攻め落とすと、その国の兵（船を除く）も兵営で作れる（名前に＊）。\n■ 外交　F2で外交画面。攻撃するには宣戦が必要。都市を落とすと自国のものになる。全ての都市を失うと滅亡する（第1回の十字軍は兵が尽きるまで滅びない）。\n■ 反〇〇同盟　第2回の長い時代だけ。侵略を重ねて隣国の警戒が100になった国に、国境を接する国々が15年間いっせいに攻めかかる。\n■ 史実の出来事　その時が来ると、英雄の登場、王朝の交代（ファーティマ朝の終焉など）、都市の奪取（アスカロンの陥落・エルサレムの開城など）が起こる。プレイヤーの都市は出来事で奪われず、相手が攻めてくる。歴史（F3）で確かめられる。\n■ 交易（F4）　国に属さない商人が諸国を巡り、生産の盛んな国に集まって税（銭）を払う。地中海の道・紅海の道・シルクロードの先には遠方の商人が来る。ベドウィン・トルクメン・ニザール派などの部族は略奪に来るか、傭兵として雇える。\n■ 指揮中の一時停止　自分の部隊を選ぶと時が止まり、命令を出すか選択を解くと進む。\n■ 戦場の霧　自国の民・兵・建物の近くしか見えない。一度見た土地はうっすら見える。\n\n■ 操作\n軍事ユニットを2体以上選択し、「軍団」（J）から編成。軍団番号で呼び出し、Aで進軍先を指定、Dで領内の迎撃・防衛集結を命じる。\n  左クリック：選択　ドラッグ：範囲選択　ダブルクリック：同じ兵種を全選択（完成済みの兵営も画面内で一括選択・生産）　Shift：追加選択\n  右クリック：移動／攻撃／採集（森・鉱山・田）／建設の手伝い／乗船（兵で船）／上陸（船で陸）　建物を選んで右クリック：集結地点\n  A：進軍（途中の敵と戦う）　S：停止　T：訓練・教化　C：兵⇔民の転換（船：上陸）　Q/W/R…：建設・訓練　H：英雄の一覧\n  Ctrl＋数字：部隊の登録　数字：呼び出し　.：手の空いた民　Home：国都へ\n  ホイール：拡大縮小　中ボタンドラッグ・矢印キー・画面端：移動　ミニマップのクリック：その場所へ\n  Space：一時停止　＋／−：速度　Esc：告知を閉じる・取り消し　F5：記録　F11：全画面　Ctrl＋＋／Ctrl＋−：文字の大きさ",
+            "■ Choosing a crusade  On the title screen, the Crusade button switches between the First, Second and Third Crusades; click a mark on the map to choose your side. Each crusade has its own map, states, cities, heroes and victory conditions.\n\n■ First Crusade (1096–1104, 1 year = 4 min)  A map from Western Europe to the Near East. Play the Crusaders or the Fatimids.\n  · Crusaders: take Jerusalem by the historical date (July 1099) and hold it for 5 years to win. Fail to take it, lose it within 5 years, or be annihilated, and you lose.\n  · Fatimids: prevent that, or annihilate the crusade.\n  · The crusade owns no cities and sets out from across the West. It is strongest at departure: no troops or workers can be added (and it pays no upkeep). Marching through enemy land slowly drains HP, and so does standing still; troops heal inside the territory of captured cities. In Byzantine lands knights heal, but the People's Crusade does not.\n  · The Seljuk states (Rum, the Great Seljuks, the Danishmendids, Damascus, Aleppo, the Artuqids) attack Fatimid troops crossing their land even without war (and those troops may fight back there).\n■ Second Crusade (1148–1250, 1 year = 24 s)  A map of the Middle East. Play the Crusaders, Fatimids, Zengids, Seljuks (of Rum) or Byzantium.\n  · Crusaders: capture Damascus without being annihilated.\n  · Others: the state with the largest realm (territory tiles) in 1250 wins. The Fatimids become the Ayyubids in 1171.\n■ Third Crusade (June 1191 – September 1192, 1 year = 20 min)  A map of the Levantine coast. Play the Crusader host or the Ayyubids, starting at the siege of Acre.\n  · Drive the enemy from every Levantine coastal city (⚓ marks) to win. If nothing is decided by September 1192, the war ends with the Treaty of Jaffa.\n\n■ Cities and forts  Cities cannot be founded. Every city on the map is a real town; capture them (historical cities cannot be razed). Workers can build forts (R), which shoot approaching enemies (range 9), up to a limit set by your number of cities. Major cities start with wall forts and barracks.\n■ Villages  Hamlets around cities that pay their owner a little tax. Burn an enemy village to seize its food: your troops nearby recover 30% HP. Villages are rebuilt after a while.\n■ Heroes  Real princes, kings, sultans and generals of each crusade are on the field from the start, serving the state they served in history (Richard the Lionheart, Saladin, Godfrey, Nur ad-Din...). Heroes heal over time but never return once slain. Press Heroes (H) to see them and where they are. Historical events may send them home or have them assassinated.\n■ Ships and the sea  Only the Muslim coastal states (Fatimids, Ayyubids), the Italian maritime republics (Venice, Genoa, Pisa) and Byzantium can build ships; capturing their cities does not change that. Some crusaders start with ships (hired ones). Order troops across the sea and they wait on the shore while free ships ferry them back and forth (6 per ship).\n\n■ Resources  Food (fields), wood (forests), iron (mines). Workers carry them to a capital or town. Cities and villages also pay a little tax.\n■ Units  Their number is limited (more cities raise the limit). Instead, Train / Educate raises each unit's power. Soldiers eat food just by existing (upkeep).\n  Counters: infantry (spears) > cavalry > archers > infantry. Horse archers (Turkish horse archers, Mamluks, Turcopoles) are cavalry that shoot from range. Knights, Templars and Hospitallers are powerful shock troops.\n■ Subjects  Capture a city founded by another state and you can train its units (except ships) at your barracks (marked with *).\n■ Diplomacy  F2 opens Diplomacy. You must declare war before attacking. Capture a city and it becomes yours. A state that loses all its cities falls (the First Crusade's crusaders fall only when their troops are gone).\n■ Anti-X League  Only in the long age of the Second Crusade. When a state's aggression pushes its neighbours' alarm to 100, the states on its borders attack it together for 15 years.\n■ Historical events  At the right time heroes appear, dynasties change (the end of the Fatimids) and cities change hands (the fall of Ascalon, the surrender of Jerusalem...). Events never take the player's cities; the other side attacks instead. See History (F3).\n■ Trade (F4)  Merchants of no state travel the land and gather in productive states, paying tax (coin). Foreign merchants arrive at the ends of the Mediterranean, Red Sea and Silk Roads. Bedouin, Turkmens, Nizaris and other peoples raid, or can be hired as mercenaries.\n■ Time stops while commanding  Selecting your own units stops time; it resumes when you give an order or clear the selection.\n■ Fog of war  You see only around your own workers, soldiers and buildings. Land you have seen stays dimly visible.\n\n■ Controls\nSelect at least two military units and open Corps (J) to form a corps. Recall it by its button, then press A and pick an advance destination, or press D to intercept intruders or rally for defense.\n  Left click: select   Drag: box select   Double click: select all of a type (completed barracks on screen can train together)   Shift: add to selection\n  Right click: move / attack / gather (forest, mine, field) / help build / board (troops on a ship) / land (ship on land)   Right click with a building selected: rally point\n  A: attack-move   S: stop   T: train / educate   C: convert soldier ⇔ worker (ships: land troops)   Q/W/R...: build / train   H: heroes\n  Ctrl+number: save group   Number: recall group   .: idle worker   Home: go to capital\n  Wheel: zoom   Middle drag / arrow keys / screen edge: scroll   Minimap click: jump\n  Space: pause   + / -: speed   Esc: close notice / cancel   F5: save / load   F11: fullscreen   Ctrl++ / Ctrl+−: text size",
+            "■ 选择远征　在标题画面用“远征”按钮切换第一次、第二次、第三次十字军，再点击地图上的标记选择要率领的一方。每次远征的地图、国家、城市、英雄与胜利条件各不相同。\n\n■ 第一次十字军（1096〜1104年，1年＝4分钟）　从西欧到近东的地图。可选十字军或法蒂玛王朝。\n  ・十字军：在史实攻占日（1099年7月）前夺取耶路撒冷并坚守5年即胜利。未能夺取、5年内失守或全军覆没则失败。\n  ・法蒂玛王朝：阻止这一切，或全歼十字军即胜利。\n  ・十字军没有城市，从西欧各地出发。出发时兵力最强，兵与民都无法补充（也没有维持费）。在敌境行军体力会逐渐下降，停留时也会下降；在攻占城市的领地内可恢复。在拜占庭领内骑士可以恢复，平民十字军则不能。\n  ・罗姆、大塞尔柱、达尼什曼德、大马士革、阿勒颇、阿尔图格等塞尔柱系国家，即使未宣战也会迎击穿越其领土的法蒂玛军（在该地可以还击）。\n■ 第二次十字军（1148〜1250年，1年＝24秒）　中近东的地图。可选十字军、法蒂玛王朝、赞吉王朝、塞尔柱王朝（罗姆）、拜占庭帝国。\n  ・十字军：在不被全歼的情况下攻占大马士革即胜利。\n  ・其他国家：1250年时版图（领土格数）最广者胜利。法蒂玛王朝于1171年变为阿尤布王朝。\n■ 第三次十字军（1191年6月〜1192年9月，1年＝20分钟）　黎凡特沿岸的地图。可选十字军联军或阿尤布王朝，从阿卡之围开始。\n  ・将敌人逐出所有黎凡特沿岸城市（⚓标记）即胜利。若到1192年9月仍未决出胜负，则以雅法和约告终。\n\n■ 城市与要塞　无法新建城市。地图上的城市都是真实存在的城镇，须攻占获得（真实城市无法焚毁）。民可以修筑要塞（R），射击靠近的敌兵（射程9），数量上限取决于城邑数。主要城市开局即有城墙要塞与兵营。\n■ 民宅　城市周围的村庄，向领主缴纳少量赋税。焚烧敌方民宅可夺取粮食，附近己方士兵恢复3成体力。过一段时间会重建。\n■ 英雄　每次远征时真实存在的诸侯、国王、苏丹与将领，从一开始就作为其效力之国的士兵登场（狮心王理查、萨拉丁、戈弗雷、努尔丁等）。英雄会恢复伤势，但战死后不再归来。按“英雄 H”查看名单与所在。史实事件可能使其归国或遭暗杀。\n■ 船与海　只有伊斯兰沿海国家（法蒂玛王朝、阿尤布王朝）、意大利海上共和国（威尼斯、热那亚、比萨）与拜占庭帝国能造船，攻占其城市也无法获得造船能力。部分十字军开局即拥有（租借的）船只。命令士兵渡海后，他们会在岸边等待，空闲的船只会自动往返运送（每船6人）。\n\n■ 资源　粮（田）、木（伐林）、铁（矿山）。民运往国都或邑。城邑与民宅也会缴纳少量赋税。\n■ 单位　数量有上限（城邑越多上限越高）。可通过训练、教化逐个提高能力。士兵只要存在就会消耗粮食（维持费）。\n  相克：步兵（枪）＞骑兵＞弓兵＞步兵。骑射兵（突厥骑射兵、马穆鲁克、土科波雷）是能远程射击的骑兵。骑士、圣殿骑士与医院骑士是强力的冲锋部队。\n■ 臣属　攻占他国所筑的城市后，可在兵营训练该国的兵种（船只除外，名称带＊）。\n■ 外交　按 F2 打开外交画面。进攻前必须宣战。攻下城市即归己方所有。失去全部城市即灭亡（第一次十字军的十字军在士兵耗尽前不会灭亡）。\n■ 反某某同盟　仅限第二次十字军的漫长时代。屡次侵略使邻国警戒达到100的国家，将遭到接壤各国在15年间的联合进攻。\n■ 史实事件　时机一到，就会有英雄登场、王朝更替（法蒂玛王朝的终结）与城市易手（阿斯卡隆陷落、耶路撒冷开城等）。事件不会夺取玩家的城市，而是由对方发兵进攻。可在历史（F3）中查看。\n■ 贸易（F4）　不属于任何国家的商人周游各国，聚集于生产兴盛之国并缴税（钱）。远方商人会经地中海之路、红海之路、丝绸之路而来。贝都因人、突厥蛮人、尼扎里派等部族会来劫掠，也可雇为佣兵。\n■ 指挥时暂停　选中己方部队时时间停止，下达命令或取消选择后继续。\n■ 战争迷雾　只能看到己方民、兵、建筑附近。曾看过的土地会淡淡显示。\n\n■ 操作\n选中至少两个己方军事单位，从“军团”（J）组建。点击军团编号召回，按 A 指定进军目标，按 D 迎击入侵者或集结防守。\n  左键：选择　拖动：框选　双击：选中同类全部（可选中屏幕内已完工的兵营并批量生产）　Shift：追加选择\n  右键：移动／攻击／采集（森林、矿山、田）／协助建造／登船（兵对船）／登陆（船对陆地）　选中建筑后右键：集结点\n  A：进军（沿途作战）　S：停止　T：训练・教化　C：兵⇔民转换（船：登陆）　Q/W/R…：建造・训练　H：英雄名单\n  Ctrl＋数字：编队　数字：调出编队　.：空闲的民　Home：前往国都\n  滚轮：缩放　中键拖动・方向键・屏幕边缘：移动　点击小地图：前往该处\n  Space：暂停　＋／−：速度　Esc：关闭通知・取消　F5：存档　F11：全屏　Ctrl＋＋／Ctrl＋−：文字大小",
         );
         // 入りきらなければ小さい字にする
         let f = if self.gfx.measure_h(text, Font::Normal, pw - 48.0) > ph - 64.0 { Font::Small } else { Font::Normal };
